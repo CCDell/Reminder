@@ -14,17 +14,33 @@
 #define GRID_POSX 0
 #define GRID_POSY 0
 #define TEXT_BOX_POSX 0
-#define TEXT_BOX_POSY 8
+#define TEXT_BOX_POSY 8  
 #define TEXT_BOX_LENGTH 1
 #define BUTTON_POSX 1
 #define BUTTON_POSY 8
 #define BUTTON_LEN 1
-#define MAXSTR 100
+#define MAXSTR 1000
 #define MAXDATA 5
+#define MAXTODO 100
 
-void getPNGRatio(FILE* filename, int *height , int * width);
+typedef struct {
+  
+  GtkWidget* widgets[MAXDATA];
+  int widgetCount;
+  char * strings[MAXTODO];
+  int stringCount;
+  
+} userInfo;
+
+
 void activate(GtkApplication *, gpointer);
+void getPNGRatio(char * filename, int *height , int * width);
 void on_button_clicked(GtkButton * button, gpointer user_data);
+int getNextHour(time_t * timeStart);
+int getDelimitedStrings(char * strlist[], char * tempStr, const char * delim,
+			const int strlist_len);
+int readFileStrings(const char * filename, char *  todo[], const int todoLen,
+	     const int strlen, const char * delim);
 
 int main(int argc, char * argv[]){
   time_t timeStart;
@@ -34,12 +50,8 @@ int main(int argc, char * argv[]){
   time(&timeStart); // Get starting time of daemon
   
   // Get next closest hour
-  for(int i = 0; i < SECS_P_HR+1; ++i){
-    if((timeStart + i) % SECS_P_HR == 0){
-      nxtHour = i;
-      break;
-    }
-  }
+  nxtHour = getNextHour(&timeStart);
+  
   short tempSig = -1;
   
   while(1){
@@ -56,7 +68,8 @@ int main(int argc, char * argv[]){
       GtkWidget* window = NULL;  // Window is a portion of the application, application
       // can have many windows
       GtkWidget* image = NULL; // Image in window
-      GtkWidget * data[MAXDATA] = {};
+      userInfo * data = malloc(sizeof(userInfo));
+      bzero(data, sizeof(userInfo));
 
       int status = 1; // To see if thin has failed
       
@@ -68,9 +81,13 @@ int main(int argc, char * argv[]){
       status = g_application_run(G_APPLICATION (app), argc, argv); // Runs the application.
       g_object_unref(app); // deletes app when done
       
+      for(int i = 0; i < data->stringCount; ++i)
+	free(data->strings[i]);
+      free(data);
+      exit(0);
     }
   }
-    
+
   return 0;
 }
 
@@ -78,7 +95,7 @@ int main(int argc, char * argv[]){
 void activate(GtkApplication *app, gpointer user_data){
   
   // Window is apart of application, image is a part of window
-  GtkWidget ** data = user_data;
+  userInfo * data =  user_data;
   GtkWidget * window = NULL; 
   GtkWidget * image = NULL;
   GtkWidget * grid = NULL;
@@ -87,11 +104,14 @@ void activate(GtkApplication *app, gpointer user_data){
   GtkWidget * label = NULL;
   GtkEntryBuffer * buff = NULL;
 
-  FILE * file = fopen("quoteCrop.png", "rb"); // Opens file for reading
+  // Get image's dimensions
   int image_height = 0;
   int image_width = 0;
-  getPNGRatio(file, &image_height, &image_width);
-  fclose(file);
+  getPNGRatio("quoteCrop.png", &image_height, &image_width);
+
+  // Get the information stored in the todo file
+
+  data->stringCount = readFileStrings("todo.txt", data->strings, MAXTODO, MAXSTR, "=*=");
   
   window = gtk_application_window_new(app); // Make a new window under the app
   gtk_window_set_title(GTK_WINDOW(window), "HR"); // Title the window
@@ -109,10 +129,12 @@ void activate(GtkApplication *app, gpointer user_data){
   gtk_entry_buffer_set_max_length(buff, 100);
   gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Enter something...");
 
-  data[0] = label;
-  data[1] = entry;
   
-  g_signal_connect(button, "clicked", G_CALLBACK(on_button_clicked), (void *) data);
+  data->widgets[0] = label;
+  data->widgets[1] = entry;
+  data->widgetCount +=2;
+  
+  g_signal_connect(button, "clicked", G_CALLBACK(on_button_clicked), data);
   
   /// The last 2 arguments are the grid
   // spaces it possesses, because it does not change the window's height, the grid's rows
@@ -126,14 +148,18 @@ void activate(GtkApplication *app, gpointer user_data){
   
   gtk_container_add(GTK_CONTAINER (window), grid);
   gtk_widget_show_all(window);
+  
+
 
 }
 
-void getPNGRatio(FILE * file, int * height, int * width){
-  
-
+void getPNGRatio(char * fileName, int * height, int * width){
+ 
+  const char * readType = "rb"; // set read type to read byte
+  FILE * file = fopen(fileName, readType); // Opens file for reading
   const int timesRead = 2; // Times to read 4 bytes
   const int startLocationInFile = 16; // The resolution starts 16 bytes into file, that's all we want
+
   int dimensions[2] = {};
   fseek(file, startLocationInFile, SEEK_SET); // seeks startLocationInFile bytes after the start (SEEK_SET) which is where the resolution is
   
@@ -154,19 +180,82 @@ void getPNGRatio(FILE * file, int * height, int * width){
 
   *width = dimensions[0];
   *height = dimensions[1];
+  fclose(file);
 }
 
 void on_button_clicked(GtkButton * button, gpointer user_data){
-
+  
   /// for either of these initializations, treat the user_data as an array filled with only
   // the type desired. to get a label, say the entire user_data array is of GtkLabels.
   // this is because the gpointer is a void * and does not like to be dereferenced any
-  // other way
-  GtkLabel * label = ((GtkLabel **)user_data)[0]; 
-  GtkEntry * entry = ((GtkEntry **)user_data)[1];
-   
-  gtk_label_set_text(label, gtk_entry_get_text(entry));
+  // other way. gtk_entry_get_text() for getting data from entry
+  
+  userInfo * data = user_data;
+  
+  GtkLabel * label = (GtkLabel*) data->widgets[0]; 
+  GtkEntry * entry = (GtkEntry*) data->widgets[1];
+  
+  for(int i = 0 ; i < data->stringCount; ++i){
+    gtk_label_set_text(label,data->strings[i]);
+  }
   
   gtk_entry_set_text(entry, "");
   
+}
+
+int readFileStrings(const char * filename, char * strlist[],
+		    const int strlist_len, const int strlen, const char * delim){
+  
+  FILE * file = NULL;
+  int num_read = 0;
+  const char * readType = "r";
+  char tempChar = 0;
+  char tempStr[MAXSTR] = {};
+  int charRead = 0;
+  
+  file = fopen(filename, readType);
+  
+  // Read entire file
+  
+  while((tempChar = fgetc(file)) != EOF)
+    tempStr[charRead++] = tempChar;
+  tempStr[charRead-1] = '\0';
+  
+  // Copy delimited areas into strlist
+  num_read = getDelimitedStrings(strlist, tempStr, delim, strlen);
+
+  fclose (file);
+  return num_read;
+}
+
+int getDelimitedStrings(char * strlist[], char * tempStr, const char * delim,
+			const int strlist_len){
+
+  int num_read = 0;
+  char * temp = NULL;
+  if((temp = strtok(tempStr, delim)) != NULL){
+
+    strlist[num_read] = malloc(strlen(temp)+1);
+    strcpy(strlist[num_read], temp);
+    
+    for(num_read = 1; num_read < strlist_len &&
+	  (temp = strtok(NULL, delim)) != NULL; ++num_read){
+      strlist[num_read] = malloc(strlen(temp)+1);
+      strcpy(strlist[num_read], temp);
+    }
+  }
+
+  return num_read;
+
+}
+
+
+int getNextHour(time_t * timeStart){
+  
+  for(int i = 0; i < SECS_P_HR+1; ++i){
+    if((*timeStart + i) % SECS_P_HR == 0){
+      return i;
+    }
+  }
+    
 }
